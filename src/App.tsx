@@ -1,7 +1,7 @@
-import { ComponentExample } from "@/components/component-example";
+import { TaskBoardApp } from "@/mini-jira/TaskBoard";
 
 export function App() {
-return <ComponentExample />;
+  return <TaskBoardApp />;
 }
 
 export default App;
