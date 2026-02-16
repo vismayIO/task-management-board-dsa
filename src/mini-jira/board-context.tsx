@@ -257,6 +257,30 @@ function boardReducer(state: BoardState, action: BoardAction): BoardState {
       };
     }
 
+    case "deselect_many": {
+      if (state.selectedTaskIds.size === 0 || action.taskIds.length === 0) {
+        return state;
+      }
+
+      let changed = false;
+      const selectedTaskIds = new Set(state.selectedTaskIds);
+
+      for (const taskId of action.taskIds) {
+        if (selectedTaskIds.delete(taskId)) {
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        return state;
+      }
+
+      return {
+        ...state,
+        selectedTaskIds,
+      };
+    }
+
     case "move_tasks": {
       return moveTasks(state, action.taskIds, action.nextStatus);
     }

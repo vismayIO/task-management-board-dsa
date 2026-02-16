@@ -64,6 +64,7 @@ export type BoardAction =
   | { type: "toggle_task_selection"; taskId: TaskId }
   | { type: "clear_selection" }
   | { type: "select_many"; taskIds: TaskId[] }
+  | { type: "deselect_many"; taskIds: TaskId[] }
   | { type: "move_tasks"; taskIds: TaskId[]; nextStatus: TaskStatus }
   | { type: "bulk_move_selected"; nextStatus: TaskStatus }
   | { type: "undo_move" }

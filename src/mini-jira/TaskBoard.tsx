@@ -22,13 +22,30 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
-import { Separator } from "@/components/ui/separator";
+import {
+  Progress,
+  ProgressLabel,
+  ProgressValue,
+} from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   BoardProvider,
@@ -54,6 +71,7 @@ import type {
 } from "@/mini-jira/types";
 import { STATUS_LABELS, STATUS_ORDER } from "@/mini-jira/types";
 import { useDebouncedValue } from "@/mini-jira/useDebouncedValue";
+import "./task-board.css";
 
 const VIEWPORT_HEIGHT = 480;
 const OVERSCAN = 3;
@@ -61,33 +79,47 @@ const PAGE_SIZE_OPTIONS = [24, 48, 72] as const;
 const TASK_CARD_HEIGHT = 252;
 const TASK_ROW_HEIGHT = TASK_CARD_HEIGHT + 8;
 
-const CONTROL_LABEL_CLASS =
-  "text-[11px] font-semibold uppercase tracking-[0.08em] text-[#4a5965]";
+const CONTROL_LABEL_CLASS = "mini-jira-field-label";
 
 const STATUS_DOT_CLASS: Record<TaskStatus, string> = {
-  backlog: "bg-slate-400",
-  todo: "bg-blue-600",
+  backlog: "bg-slate-500",
+  todo: "bg-sky-600",
   in_progress: "bg-amber-500",
   done: "bg-emerald-600",
 };
 
+const STATUS_PILL_CLASS: Record<TaskStatus, string> = {
+  backlog: "border-slate-300 bg-slate-100 text-slate-700",
+  todo: "border-sky-300 bg-sky-50 text-sky-700",
+  in_progress: "border-amber-300 bg-amber-50 text-amber-700",
+  done: "border-emerald-300 bg-emerald-50 text-emerald-700",
+};
+
 const PRIORITY_BADGE_CLASS: Record<TaskPriority, string> = {
-  low: "border-emerald-300 bg-emerald-50 text-emerald-700",
-  medium: "border-amber-300 bg-amber-50 text-amber-700",
-  high: "border-red-300 bg-red-50 text-red-700",
+  low: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  medium: "border-amber-200 bg-amber-50 text-amber-700",
+  high: "border-rose-200 bg-rose-50 text-rose-700",
 };
 
 const TOAST_TONE_CLASS: Record<ToastTone, string> = {
-  info: "border-blue-300 text-blue-800",
+  info: "border-sky-300 text-sky-800",
   success: "border-emerald-300 text-emerald-800",
   warning: "border-amber-300 text-amber-800",
-  error: "border-red-300 text-red-800",
+  error: "border-rose-300 text-rose-800",
+};
+
+const STATUS_ACCENT: Record<TaskStatus, string> = {
+  backlog: "#64748b",
+  todo: "#0369a1",
+  in_progress: "#d97706",
+  done: "#16a34a",
 };
 
 interface StatusColumnProps {
   status: TaskStatus;
   query: string;
   pageSize: number;
+  totalRootTasks: number;
   tasksById: Record<TaskId, Task>;
   selectedTaskIds: Set<TaskId>;
   draggingTaskId: TaskId | null;
@@ -106,10 +138,18 @@ interface StatusColumnProps {
   onToggleSelect: (taskId: TaskId) => void;
   onMoveTask: (taskId: TaskId, nextStatus: TaskStatus) => void;
   onSelectMany: (taskIds: TaskId[]) => void;
+  onDeselectMany: (taskIds: TaskId[]) => void;
 }
 
 function estimateTaskHeight(): number {
   return TASK_ROW_HEIGHT;
+}
+
+function percentage(part: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.round((part / total) * 100);
 }
 
 const SubtaskTree = memo(function SubtaskTree({
@@ -127,20 +167,23 @@ const SubtaskTree = memo(function SubtaskTree({
   }
 
   return (
-    <li className="grid gap-0.5" style={{ paddingLeft: `${depth * 0.55}rem` }}>
-      <div className="inline-flex items-center gap-1.5 text-[11px] text-[#2f3b45]">
+    <li
+      className="mini-jira-subtask-node"
+      style={{ paddingLeft: `${depth * 0.55}rem` }}
+    >
+      <div className="mini-jira-subtask-row">
         <span
           className={cn(
             "inline-block size-2 rounded-full",
             STATUS_DOT_CLASS[task.status],
           )}
         />
-        <span className="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:1]">
+        <span className="mini-jira-subtask-title">
           {task.title}
         </span>
       </div>
       {task.subtaskIds.length > 0 ? (
-        <ul className="grid list-none gap-0.5 p-0">
+        <ul className="mini-jira-subtask-children">
           {task.subtaskIds.map((subtaskId) => (
             <SubtaskTree
               key={subtaskId}
@@ -202,12 +245,15 @@ const TaskCard = memo(function TaskCard({
   return (
     <Card
       size="sm"
-      className={cn(
-        "h-[252px] gap-2 rounded-lg border border-[#dfe4e8] bg-white py-3 transition [transition-property:transform,box-shadow,opacity]",
-        "cursor-grab active:cursor-grabbing hover:-translate-y-0.5 hover:shadow-[0_8px_18px_rgba(9,30,66,0.12)]",
-        selected && "border-[#0972d3] shadow-[0_0_0_1px_rgba(9,114,211,0.38)]",
-        isDragging && "scale-[0.98] opacity-55",
-      )}
+      data-status={task.status}
+      data-selected={selected ? "true" : "false"}
+      data-dragging={isDragging ? "true" : "false"}
+      style={
+        {
+          "--status-accent": STATUS_ACCENT[task.status],
+        } as CSSProperties
+      }
+      className="mini-jira-task-card"
       draggable
       aria-grabbed={isDragging}
       onDragStart={(event: DragEvent<HTMLElement>) => {
@@ -219,11 +265,11 @@ const TaskCard = memo(function TaskCard({
         onDragEnd();
       }}
     >
-      <CardHeader className="gap-1 px-3">
-        <div className="flex items-center justify-between gap-2">
+      <CardHeader className="mini-jira-task-header">
+        <div className="mini-jira-task-row">
           <Label
             htmlFor={`task-select-${task.id}`}
-            className="text-xs font-normal text-[#4a5965]"
+            className="mini-jira-task-select"
           >
             <Checkbox
               id={`task-select-${task.id}`}
@@ -234,41 +280,52 @@ const TaskCard = memo(function TaskCard({
             />
             <span>#{task.id.slice(-3)}</span>
           </Label>
-          <Badge
-            variant="outline"
-            className={cn("uppercase", PRIORITY_BADGE_CLASS[task.priority])}
-          >
-            {task.priority}
-          </Badge>
+          <div className="mini-jira-task-badges">
+            <Badge
+              variant="outline"
+              className={cn("uppercase mini-jira-priority-pill", PRIORITY_BADGE_CLASS[task.priority])}
+            >
+              {task.priority}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={cn(
+                "mini-jira-status-pill",
+                STATUS_PILL_CLASS[task.status],
+              )}
+            >
+              {STATUS_LABELS[task.status]}
+            </Badge>
+          </div>
         </div>
 
-        <CardTitle className="text-[15px] leading-5 tracking-[-0.01em] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+        <CardTitle className="mini-jira-task-title">
           {task.title}
         </CardTitle>
 
-        <CardDescription className="text-xs leading-4 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+        <CardDescription className="mini-jira-task-description">
           {task.description}
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="grid gap-2 px-3 pb-0 pt-0">
+      <CardContent className="mini-jira-task-content">
         {dependencyTitles.length > 0 ? (
-          <div className="rounded-md border border-dashed border-[#dfe4e8] bg-[#f8fafc] px-2 py-1.5">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#4a5965]">
+          <div className="mini-jira-meta-box">
+            <p className="mini-jira-meta-label">
               Depends on
             </p>
-            <ul className="mt-1 grid list-none gap-0.5 p-0">
+            <ul className="mini-jira-meta-list">
               {dependencyPreview.map((title) => (
                 <li
                   key={title}
-                  className="text-[11px] text-[#2f3b45] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:1]"
+                  className="mini-jira-meta-item"
                 >
                   {title}
                 </li>
               ))}
             </ul>
             {hiddenDependencyCount > 0 ? (
-              <p className="mt-0.5 text-[10px] text-[#4a5965]">
+              <p className="mini-jira-meta-more">
                 +{hiddenDependencyCount} more dependency
               </p>
             ) : null}
@@ -276,11 +333,11 @@ const TaskCard = memo(function TaskCard({
         ) : null}
 
         {task.subtaskIds.length > 0 ? (
-          <div className="rounded-md border border-dashed border-[#dfe4e8] bg-[#f8fafc] px-2 py-1.5">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#4a5965]">
+          <div className="mini-jira-meta-box">
+            <p className="mini-jira-meta-label">
               Subtasks
             </p>
-            <ul className="mt-1 max-h-11 list-none overflow-hidden p-0">
+            <ul className="mini-jira-subtask-list">
               {subtaskPreview.map((subtaskId) => (
                 <SubtaskTree
                   key={subtaskId}
@@ -291,7 +348,7 @@ const TaskCard = memo(function TaskCard({
               ))}
             </ul>
             {hiddenSubtaskCount > 0 ? (
-              <p className="mt-0.5 text-[10px] text-[#4a5965]">
+              <p className="mini-jira-meta-more">
                 +{hiddenSubtaskCount} more subtasks
               </p>
             ) : null}
@@ -299,17 +356,20 @@ const TaskCard = memo(function TaskCard({
         ) : null}
       </CardContent>
 
-      <CardFooter className="mt-auto border-t-0 bg-transparent px-3 pb-3 pt-0">
-        <div className="grid w-full gap-1">
-          <Label
-            htmlFor={`task-status-${task.id}`}
-            className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#4a5965]"
-          >
-            Move
-          </Label>
+      <CardFooter className="mini-jira-task-footer">
+        <div className="mini-jira-move-wrap">
+          <div className="mini-jira-task-row">
+            <Label
+              htmlFor={`task-status-${task.id}`}
+              className="mini-jira-move-label"
+            >
+              Move to
+            </Label>
+            <span className="mini-jira-hint">Drag and drop enabled</span>
+          </div>
           <NativeSelect
             id={`task-status-${task.id}`}
-            className="w-full"
+            className="mini-jira-move-select"
             value={task.status}
             onChange={handleMove}
           >
@@ -329,6 +389,7 @@ const StatusColumn = memo(function StatusColumn({
   status,
   query,
   pageSize,
+  totalRootTasks,
   tasksById,
   selectedTaskIds,
   draggingTaskId,
@@ -342,6 +403,7 @@ const StatusColumn = memo(function StatusColumn({
   onToggleSelect,
   onMoveTask,
   onSelectMany,
+  onDeselectMany,
 }: StatusColumnProps) {
   const [cursor, setCursor] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
@@ -400,13 +462,28 @@ const StatusColumn = memo(function StatusColumn({
     () => page.taskIds.slice(virtualRange.startIndex, virtualRange.endIndex),
     [page.taskIds, virtualRange],
   );
+  const statusShare = useMemo(
+    () => percentage(page.totalItems, totalRootTasks),
+    [page.totalItems, totalRootTasks],
+  );
+  const isPageFullySelected = useMemo(
+    () =>
+      page.taskIds.length > 0 &&
+      page.taskIds.every((taskId) => selectedTaskIds.has(taskId)),
+    [page.taskIds, selectedTaskIds],
+  );
 
   return (
     <Card
+      data-status={status}
+      style={
+        {
+          "--status-accent": STATUS_ACCENT[status],
+        } as CSSProperties
+      }
       className={cn(
-        "overflow-hidden rounded-xl border border-[#c7d2d5] bg-white py-0 shadow-sm",
-        isDropActive &&
-          "border-[#0972d3] shadow-[inset_0_0_0_1px_rgba(9,114,211,0.5),0_8px_16px_rgba(9,114,211,0.16)]",
+        "mini-jira-column",
+        isDropActive && "mini-jira-column-active",
       )}
       onDragOver={(event: DragEvent<HTMLElement>) => {
         event.preventDefault();
@@ -428,38 +505,95 @@ const StatusColumn = memo(function StatusColumn({
         onColumnDrop(status);
       }}
     >
-      <CardHeader className="border-b border-[#dfe4e8] px-3 py-2.5">
-        <CardTitle className="text-[15px] font-semibold tracking-[-0.01em] text-[#16191f]">
-          {STATUS_LABELS[status]}
-        </CardTitle>
-        <CardDescription className="text-[11px] text-[#4a5965]">
-          {page.totalItems} tasks
-        </CardDescription>
-        <CardAction>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              onSelectMany(page.taskIds);
-            }}
-            disabled={page.taskIds.length === 0}
-          >
-            Select page
-          </Button>
-        </CardAction>
+      <CardHeader className="mini-jira-column-head">
+        <div className="mini-jira-column-head-row">
+          <div className="mini-jira-column-title-wrap">
+            <div className="mini-jira-column-title-line">
+              <span
+                className={cn(
+                  "inline-block size-2 rounded-full",
+                  STATUS_DOT_CLASS[status],
+                )}
+              />
+              <CardTitle className="mini-jira-column-title">
+                {STATUS_LABELS[status]}
+              </CardTitle>
+              <Badge
+                variant="outline"
+                className={cn("mini-jira-column-chip", STATUS_PILL_CLASS[status])}
+              >
+                {statusShare}%
+              </Badge>
+            </div>
+            <CardDescription className="mini-jira-column-description">
+              {page.totalItems} tasks • {page.totalPages} pages
+            </CardDescription>
+          </div>
+          <div className="mini-jira-column-actions">
+            <Tooltip>
+              <TooltipTrigger className="mini-jira-inline-hint">
+                Drop Tip
+              </TooltipTrigger>
+              <TooltipContent side="left">
+                Dragging a selected task moves all selected tasks.
+              </TooltipContent>
+            </Tooltip>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (isPageFullySelected) {
+                  onDeselectMany(page.taskIds);
+                  return;
+                }
+                onSelectMany(page.taskIds);
+              }}
+              disabled={page.taskIds.length === 0}
+              className="mini-jira-inline-button"
+            >
+              {isPageFullySelected ? "Deselect page" : "Select page"}
+            </Button>
+          </div>
+        </div>
+        <Progress
+          value={statusShare}
+          style={
+            {
+              "--status-accent": STATUS_ACCENT[status],
+            } as CSSProperties
+          }
+          className="mini-jira-progress mini-jira-column-progress"
+        >
+          <ProgressLabel className="mini-jira-progress-label">
+            Workload share
+          </ProgressLabel>
+          <ProgressValue className="mini-jira-progress-value">
+            {(formattedValue) => formattedValue ?? `${statusShare}%`}
+          </ProgressValue>
+        </Progress>
       </CardHeader>
 
-      <CardContent className="p-0">
+      <CardContent className="mini-jira-column-body">
         <div
-          className="relative h-[22rem] overflow-auto bg-[#fbfcfd] md:h-[30rem]"
+          className="mini-jira-column-scroll"
           onScroll={(event) => {
             setScrollTop(event.currentTarget.scrollTop);
           }}
         >
           {page.taskIds.length === 0 ? (
-            <div className="grid h-full place-items-center text-sm text-[#4a5965]">
-              No tasks for this filter.
+            <div className="mini-jira-empty-wrap">
+              <Empty className="mini-jira-empty">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    0
+                  </EmptyMedia>
+                  <EmptyTitle>No tasks for this filter</EmptyTitle>
+                  <EmptyDescription>
+                    Clear the search or move tasks into this column.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             </div>
           ) : (
             <div
@@ -468,7 +602,7 @@ const StatusColumn = memo(function StatusColumn({
                   height: `${virtualRange.totalHeight}px`,
                 } as CSSProperties
               }
-              className="relative w-full"
+              className="mini-jira-virtual-list"
             >
               {visibleTaskIds.map((taskId, index) => {
                 const absoluteIndex = virtualRange.startIndex + index;
@@ -481,7 +615,7 @@ const StatusColumn = memo(function StatusColumn({
                 return (
                   <div
                     key={taskId}
-                    className="absolute inset-x-0 px-2"
+                    className="mini-jira-task-slot"
                     style={{ top: `${top}px`, height: `${TASK_ROW_HEIGHT}px` }}
                   >
                     <TaskCard
@@ -502,12 +636,13 @@ const StatusColumn = memo(function StatusColumn({
         </div>
       </CardContent>
 
-      <CardFooter className="flex-col gap-2 border-t border-[#dfe4e8] bg-[#f8fafc] px-3 py-2.5">
-        <div className="flex w-full items-center justify-between gap-1">
+      <CardFooter className="mini-jira-column-footer">
+        <div className="mini-jira-pagination-row">
           <Button
             type="button"
             variant="outline"
             size="sm"
+            className="mini-jira-page-button"
             onClick={() => {
               if (page.prevCursor !== null) {
                 setCursor(page.prevCursor);
@@ -517,7 +652,7 @@ const StatusColumn = memo(function StatusColumn({
           >
             Prev
           </Button>
-          <div className="flex items-center gap-1">
+          <div className="mini-jira-page-window">
             {page.pageWindow.map((pageNumber) => (
               <Button
                 type="button"
@@ -526,6 +661,7 @@ const StatusColumn = memo(function StatusColumn({
                 variant={
                   pageNumber === page.currentPage ? "default" : "outline"
                 }
+                className="mini-jira-page-button"
                 onClick={() => {
                   setCursor((pageNumber - 1) * pageSize);
                 }}
@@ -538,6 +674,7 @@ const StatusColumn = memo(function StatusColumn({
             type="button"
             variant="outline"
             size="sm"
+            className="mini-jira-page-button"
             onClick={() => {
               if (page.nextCursor !== null) {
                 setCursor(page.nextCursor);
@@ -549,7 +686,7 @@ const StatusColumn = memo(function StatusColumn({
           </Button>
         </div>
 
-        <div className="w-full text-right text-[11px] text-[#4a5965]">
+        <div className="mini-jira-cache-note">
           {page.cacheHit ? "LRU cache hit" : "LRU cache miss"}
         </div>
       </CardFooter>
@@ -580,16 +717,17 @@ const ToastItem = memo(function ToastItem({
       <Card
         size="sm"
         className={cn(
-          "rounded-lg border bg-white py-2",
+          "mini-jira-toast-card",
           TOAST_TONE_CLASS[toast.tone],
         )}
       >
-        <CardContent className="flex items-center justify-between gap-2 px-3 py-0">
-          <p className="text-xs sm:text-sm">{toast.message}</p>
+        <CardContent className="mini-jira-toast-content">
+          <p className="mini-jira-toast-text">{toast.message}</p>
           <Button
             type="button"
             variant="outline"
             size="xs"
+            className="mini-jira-toast-dismiss"
             onClick={() => {
               onDismiss(toast.id);
             }}
@@ -658,6 +796,22 @@ function TaskBoardBody() {
     () =>
       rootTasks.reduce((count, task) => count + task.dependencyIds.length, 0),
     [rootTasks],
+  );
+  const totalRootTasks = rootTasks.length;
+  const selectedTaskCount = state.selectedTaskIds.size;
+  const completionPercent = percentage(
+    state.tasks.idsByStatus.done.length,
+    totalRootTasks,
+  );
+  const selectionPercent = percentage(selectedTaskCount, totalRootTasks);
+  const statusOverview = useMemo(
+    () =>
+      STATUS_ORDER.map((status) => ({
+        status,
+        count: state.tasks.idsByStatus[status].length,
+        percent: percentage(state.tasks.idsByStatus[status].length, totalRootTasks),
+      })),
+    [state.tasks.idsByStatus, totalRootTasks],
   );
 
   const fetchColumnPage = useCallback(
@@ -760,6 +914,16 @@ function TaskBoardBody() {
     [dispatch],
   );
 
+  const handleDeselectMany = useCallback(
+    (taskIds: TaskId[]) => {
+      dispatch({
+        type: "deselect_many",
+        taskIds,
+      });
+    },
+    [dispatch],
+  );
+
   const handleDismissToast = useCallback(
     (toastId: string) => {
       dispatch({
@@ -828,298 +992,431 @@ function TaskBoardBody() {
   );
 
   return (
-    <main className="min-h-dvh bg-[#f3f4f7] p-3 text-[#16191f] sm:p-4 lg:p-6">
-      <Card className="rounded-xl border border-[#c7d2d5] bg-white py-0 shadow-sm">
-        <CardContent className="grid gap-4 py-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.09em] text-[#0972d3]">
-              Task Management Board • Mini Jira
-            </p>
-            <h1 className="mt-1 text-[clamp(1.35rem,2.2vw,2.1rem)] leading-tight font-semibold tracking-[-0.02em]">
-              Data-Structure Driven Workflow Board
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[#4a5965]">
-              Demonstrates normalized state, trie search, LRU-cached pagination,
-              undo/redo stacks, priority queue toasts, recursive trees,
-              dependency graphs, and virtualized rendering.
-            </p>
-          </div>
-          <dl className="grid gap-2">
-            <div>
-              <dt className="text-[11px] uppercase tracking-[0.08em] text-[#4a5965]">
-                Root Tasks
-              </dt>
-              <dd className="mt-0.5 text-2xl font-bold tracking-[-0.02em]">
-                {state.tasks.rootTaskIds.length}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[11px] uppercase tracking-[0.08em] text-[#4a5965]">
-                Selected
-              </dt>
-              <dd className="mt-0.5 text-2xl font-bold tracking-[-0.02em]">
-                {state.selectedTaskIds.size}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[11px] uppercase tracking-[0.08em] text-[#4a5965]">
-                Dependency Edges
-              </dt>
-              <dd className="mt-0.5 text-2xl font-bold tracking-[-0.02em]">
-                {dependencyEdgeCount}
-              </dd>
-            </div>
-          </dl>
-        </CardContent>
-      </Card>
-
-      <section className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Card
-          size="sm"
-          className="rounded-xl border border-[#c7d2d5] bg-white py-3 shadow-sm md:col-span-2"
-        >
-          <CardContent className="grid gap-2 px-3 py-0">
-            <Label htmlFor="search-box" className={CONTROL_LABEL_CLASS}>
-              Search tasks (Trie + debounce)
-            </Label>
-            <Input
-              id="search-box"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-              }}
-              placeholder="Type task title prefix..."
-            />
-            {autocompleteSuggestions.length > 0 ? (
-              <div className="max-h-48 overflow-y-auto rounded-md border border-[#c7d2d5] bg-white p-1 shadow-[0_8px_18px_rgba(9,30,66,0.14)]">
-                {autocompleteSuggestions.map((task) => (
-                  <Button
-                    key={task.id}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-full justify-start"
-                    onClick={() => {
-                      setQuery(task.title);
-                    }}
-                  >
-                    {task.title}
-                  </Button>
-                ))}
+    <main className="mini-jira-shell">
+      <TooltipProvider delay={180}>
+        <div className="mini-jira-layout">
+          <Card className="mini-jira-hero">
+            <CardContent className="mini-jira-hero-content">
+              <div className="mini-jira-hero-copy">
+                <p className="mini-jira-kicker">Task Management Board • Mini Jira</p>
+                <h1 className="mini-jira-title">Operations Flight Deck</h1>
+                <p className="mini-jira-description">
+                  A complete board redesign with a control rail, lane-based
+                  execution canvas, and data-driven insights powered by trie
+                  search, LRU pagination, undo/redo stacks, and dependency
+                  graphs.
+                </p>
+                <div className="mini-jira-metrics">
+                  <Card className="mini-jira-metric-card">
+                    <CardContent className="mini-jira-metric-content">
+                      <p className="mini-jira-metric-label">Completion</p>
+                      <Progress
+                        value={completionPercent}
+                        style={
+                          {
+                            "--status-accent": "#16a34a",
+                          } as CSSProperties
+                        }
+                        className="mini-jira-progress"
+                      >
+                        <ProgressValue className="mini-jira-progress-value">
+                          {(formattedValue) =>
+                            formattedValue ?? `${completionPercent}%`}
+                        </ProgressValue>
+                      </Progress>
+                    </CardContent>
+                  </Card>
+                  <Card className="mini-jira-metric-card">
+                    <CardContent className="mini-jira-metric-content">
+                      <p className="mini-jira-metric-label">Selection</p>
+                      <Progress
+                        value={selectionPercent}
+                        style={
+                          {
+                            "--status-accent": "#0369a1",
+                          } as CSSProperties
+                        }
+                        className="mini-jira-progress"
+                      >
+                        <ProgressValue className="mini-jira-progress-value">
+                          {(formattedValue) =>
+                            formattedValue ??
+                            `${selectedTaskCount}/${totalRootTasks}`}
+                        </ProgressValue>
+                      </Progress>
+                    </CardContent>
+                  </Card>
+                </div>
               </div>
-            ) : null}
-            <small className="text-xs text-[#4a5965]">
-              Debounced query: “{debouncedQuery || "(empty)"}”
-            </small>
-          </CardContent>
-        </Card>
 
-        <Card
-          size="sm"
-          className="rounded-xl border border-[#c7d2d5] bg-white py-3 shadow-sm"
-        >
-          <CardContent className="grid gap-2 px-3 py-0">
-            <Label htmlFor="page-size-select" className={CONTROL_LABEL_CLASS}>
-              Page size (cursor pagination)
-            </Label>
-            <NativeSelect
-              id="page-size-select"
-              className="w-full"
-              value={String(pageSize)}
-              onChange={(event) => {
-                setPageSize(Number(event.target.value));
-              }}
-            >
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <NativeSelectOption key={size} value={String(size)}>
-                  {size}
-                </NativeSelectOption>
+              <div className="mini-jira-hero-stats">
+                <article className="mini-jira-stat">
+                  <span className="mini-jira-stat-label">Root tasks</span>
+                  <strong className="mini-jira-stat-value mini-jira-mono">
+                    {totalRootTasks}
+                  </strong>
+                </article>
+                <article className="mini-jira-stat">
+                  <span className="mini-jira-stat-label">Selected</span>
+                  <strong className="mini-jira-stat-value mini-jira-mono">
+                    {selectedTaskCount}
+                  </strong>
+                </article>
+                <article className="mini-jira-stat">
+                  <span className="mini-jira-stat-label">Dependency edges</span>
+                  <strong className="mini-jira-stat-value mini-jira-mono">
+                    {dependencyEdgeCount}
+                  </strong>
+                </article>
+                <article className="mini-jira-stat">
+                  <span className="mini-jira-stat-label">Done tasks</span>
+                  <strong className="mini-jira-stat-value mini-jira-mono">
+                    {state.tasks.idsByStatus.done.length}
+                  </strong>
+                </article>
+              </div>
+            </CardContent>
+
+            <CardFooter className="mini-jira-hero-footer">
+              {statusOverview.map((item) => (
+                <div
+                  key={item.status}
+                  data-status={item.status}
+                  style={
+                    {
+                      "--status-accent": STATUS_ACCENT[item.status],
+                    } as CSSProperties
+                  }
+                  className="mini-jira-status-meter"
+                >
+                  <div className="mini-jira-status-meter-head">
+                    <p className="mini-jira-status-meter-title">
+                      <span
+                        className={cn(
+                          "inline-block size-2 rounded-full",
+                          STATUS_DOT_CLASS[item.status],
+                        )}
+                      />
+                      {STATUS_LABELS[item.status]}
+                    </p>
+                    <p className="mini-jira-status-meter-value mini-jira-mono">
+                      {item.count} • {item.percent}%
+                    </p>
+                  </div>
+                  <Progress value={item.percent} className="mini-jira-progress" />
+                </div>
               ))}
-            </NativeSelect>
-          </CardContent>
-        </Card>
+            </CardFooter>
+          </Card>
 
-        <Card
-          size="sm"
-          className="rounded-xl border border-[#c7d2d5] bg-white py-3 shadow-sm"
-        >
-          <CardContent className="grid gap-2 px-3 py-0">
-            <Label htmlFor="bulk-status-select" className={CONTROL_LABEL_CLASS}>
-              Bulk move selected (Set)
-            </Label>
-            <NativeSelect
-              id="bulk-status-select"
-              className="w-full"
-              value={bulkStatus}
-              onChange={(event) => {
-                setBulkStatus(event.target.value as TaskStatus);
-              }}
-            >
-              {STATUS_ORDER.map((status) => (
-                <NativeSelectOption key={status} value={status}>
-                  {STATUS_LABELS[status]}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => {
-                  dispatch({
-                    type: "bulk_move_selected",
-                    nextStatus: bulkStatus,
-                  });
-                }}
-              >
-                Apply
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  dispatch({ type: "clear_selection" });
-                }}
-              >
-                Clear Selection
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          <div className="mini-jira-workspace">
+            <aside className="mini-jira-control-rail">
+              <Card className="mini-jira-control-card">
+                <CardHeader className="mini-jira-control-header">
+                  <CardTitle className="mini-jira-control-title">
+                    Quick Search
+                  </CardTitle>
+                  <CardDescription className="mini-jira-control-description">
+                    Trie-backed title lookup with debounce.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="mini-jira-control-content">
+                  <Label htmlFor="search-box" className={CONTROL_LABEL_CLASS}>
+                    Search tasks
+                  </Label>
+                  <Input
+                    id="search-box"
+                    value={query}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                    }}
+                    placeholder="Start typing task title..."
+                  />
+                  {autocompleteSuggestions.length > 0 ? (
+                    <div className="mini-jira-suggestions">
+                      {autocompleteSuggestions.map((task) => (
+                        <Button
+                          key={task.id}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="mini-jira-suggestion-item"
+                          onClick={() => {
+                            setQuery(task.title);
+                          }}
+                        >
+                          {task.title}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : query.trim() ? (
+                    <small className="mini-jira-inline-note">
+                      No matching prefixes found.
+                    </small>
+                  ) : null}
+                  <small className="mini-jira-inline-note">
+                    Debounced query: “{debouncedQuery || "(empty)"}”
+                  </small>
+                </CardContent>
+              </Card>
 
-        <Card
-          size="sm"
-          className="rounded-xl border border-[#c7d2d5] bg-white py-3 shadow-sm md:col-span-2 xl:col-span-1"
-        >
-          <CardContent className="grid gap-2 px-3 py-0">
-            <Label className={CONTROL_LABEL_CLASS}>Undo/Redo (Stack)</Label>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={state.undoStack.length === 0}
-                onClick={() => {
-                  dispatch({ type: "undo_move" });
-                }}
-              >
-                Undo
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={state.redoStack.length === 0}
-                onClick={() => {
-                  dispatch({ type: "redo_move" });
-                }}
-              >
-                Redo
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </section>
+              <Card className="mini-jira-control-card">
+                <CardHeader className="mini-jira-control-header">
+                  <CardTitle className="mini-jira-control-title">
+                    Workflow Controls
+                  </CardTitle>
+                  <CardAction>
+                    <Tooltip>
+                      <TooltipTrigger className="mini-jira-inline-hint">
+                        Drag behavior
+                      </TooltipTrigger>
+                      <TooltipContent side="right">
+                        Dropping one selected task moves all selected tasks.
+                      </TooltipContent>
+                    </Tooltip>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="mini-jira-control-content mini-jira-control-grid">
+                  <div className="mini-jira-control-block">
+                    <Label htmlFor="page-size-select" className={CONTROL_LABEL_CLASS}>
+                      Page size
+                    </Label>
+                    <NativeSelect
+                      id="page-size-select"
+                      className="w-full"
+                      value={String(pageSize)}
+                      onChange={(event) => {
+                        setPageSize(Number(event.target.value));
+                      }}
+                    >
+                      {PAGE_SIZE_OPTIONS.map((size) => (
+                        <NativeSelectOption key={size} value={String(size)}>
+                          {size}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
 
-      <Card
-        size="sm"
-        className="mt-3 rounded-xl border border-[#c7d2d5] bg-white py-3 shadow-sm"
-      >
-        <CardHeader className="gap-1 border-b border-[#edf0f2] px-3 pb-2">
-          <CardTitle className="text-base">
-            Dependency Graph (Cycle Detection)
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="grid items-center gap-2 px-3 pt-2 md:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto]">
-          <Label htmlFor="dependency-task" className={CONTROL_LABEL_CLASS}>
-            Task
-          </Label>
-          <NativeSelect
-            id="dependency-task"
-            className="w-full"
-            value={selectedDependencyTaskId}
-            onChange={(event) => {
-              setDependencyTaskId(event.target.value);
-            }}
-          >
-            {rootTasks.map((task) => (
-              <NativeSelectOption key={task.id} value={task.id}>
-                {task.id} - {task.title}
-              </NativeSelectOption>
+                  <div className="mini-jira-control-block">
+                    <Label htmlFor="bulk-status-select" className={CONTROL_LABEL_CLASS}>
+                      Bulk move selected
+                    </Label>
+                    <NativeSelect
+                      id="bulk-status-select"
+                      className="w-full"
+                      value={bulkStatus}
+                      onChange={(event) => {
+                        setBulkStatus(event.target.value as TaskStatus);
+                      }}
+                    >
+                      {STATUS_ORDER.map((status) => (
+                        <NativeSelectOption key={status} value={status}>
+                          {STATUS_LABELS[status]}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                    <div className="mini-jira-actions-row">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          dispatch({
+                            type: "bulk_move_selected",
+                            nextStatus: bulkStatus,
+                          });
+                        }}
+                      >
+                        Apply
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          dispatch({ type: "clear_selection" });
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mini-jira-control-block">
+                    <Label className={CONTROL_LABEL_CLASS}>History stack</Label>
+                    <div className="mini-jira-actions-row">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={state.undoStack.length === 0}
+                        onClick={() => {
+                          dispatch({ type: "undo_move" });
+                        }}
+                      >
+                        Undo
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={state.redoStack.length === 0}
+                        onClick={() => {
+                          dispatch({ type: "redo_move" });
+                        }}
+                      >
+                        Redo
+                      </Button>
+                    </div>
+                    <small className="mini-jira-inline-note">
+                      {state.undoStack.length} undo entries •{" "}
+                      {state.redoStack.length} redo entries
+                    </small>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="mini-jira-control-card">
+                <CardHeader className="mini-jira-control-header">
+                  <CardTitle className="mini-jira-control-title">
+                    Dependency Linker
+                  </CardTitle>
+                  <CardDescription className="mini-jira-control-description">
+                    Add directed edges with cycle protection.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="mini-jira-control-content mini-jira-control-grid">
+                  <div className="mini-jira-control-block">
+                    <Label htmlFor="dependency-task" className={CONTROL_LABEL_CLASS}>
+                      Task
+                    </Label>
+                    <NativeSelect
+                      id="dependency-task"
+                      className="w-full"
+                      value={selectedDependencyTaskId}
+                      onChange={(event) => {
+                        setDependencyTaskId(event.target.value);
+                      }}
+                    >
+                      {rootTasks.map((task) => (
+                        <NativeSelectOption key={task.id} value={task.id}>
+                          {task.id} - {task.title}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
+
+                  <div className="mini-jira-control-block">
+                    <Label htmlFor="depends-on-task" className={CONTROL_LABEL_CLASS}>
+                      Depends on
+                    </Label>
+                    <NativeSelect
+                      id="depends-on-task"
+                      className="w-full"
+                      value={selectedDependsOnTaskId}
+                      onChange={(event) => {
+                        setDependsOnTaskId(event.target.value);
+                      }}
+                    >
+                      {rootTasks.map((task) => (
+                        <NativeSelectOption key={task.id} value={task.id}>
+                          {task.id} - {task.title}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
+
+                  <div className="mini-jira-actions-row">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        dispatch({
+                          type: "add_dependency",
+                          taskId: selectedDependencyTaskId,
+                          dependsOnTaskId: selectedDependsOnTaskId,
+                        });
+                      }}
+                      disabled={!selectedDependencyTaskId || !selectedDependsOnTaskId}
+                    >
+                      Link Dependency
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </aside>
+
+            <section className="mini-jira-board-canvas">
+              <header className="mini-jira-board-header">
+                <div>
+                  <h2 className="mini-jira-board-title">Execution Lanes</h2>
+                  <p className="mini-jira-board-description">
+                    Drag tasks between lanes or use each card&apos;s quick move
+                    selector.
+                  </p>
+                </div>
+                <div className="mini-jira-board-pills">
+                  <Badge
+                    variant="outline"
+                    className="mini-jira-board-pill mini-jira-mono"
+                  >
+                    Selected {selectedTaskCount}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="mini-jira-board-pill mini-jira-mono"
+                  >
+                    Done {state.tasks.idsByStatus.done.length}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="mini-jira-board-pill mini-jira-mono"
+                  >
+                    Completion {completionPercent}%
+                  </Badge>
+                </div>
+              </header>
+
+              <div className="mini-jira-board-scroll">
+                <div className="mini-jira-board-grid">
+                  {STATUS_ORDER.map((status) => (
+                    <StatusColumn
+                      key={`${status}-${debouncedQuery}-${pageSize}-${state.revision}`}
+                      status={status}
+                      query={debouncedQuery}
+                      pageSize={pageSize}
+                      totalRootTasks={totalRootTasks}
+                      tasksById={state.tasks.byId}
+                      selectedTaskIds={state.selectedTaskIds}
+                      draggingTaskId={draggingTaskId}
+                      isDropActive={dropTargetStatus === status}
+                      fetchColumnPage={fetchColumnPage}
+                      onTaskDragStart={handleTaskDragStart}
+                      onTaskDragEnd={handleTaskDragEnd}
+                      onColumnDragOver={handleColumnDragOver}
+                      onColumnDragLeave={handleColumnDragLeave}
+                      onColumnDrop={handleColumnDrop}
+                      onToggleSelect={handleToggleSelect}
+                      onMoveTask={handleMoveTask}
+                      onSelectMany={handleSelectMany}
+                      onDeselectMany={handleDeselectMany}
+                    />
+                  ))}
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <ul className="mini-jira-toast-stack">
+            {state.activeToasts.map((toast) => (
+              <ToastItem
+                key={toast.id}
+                toast={toast}
+                onDismiss={handleDismissToast}
+              />
             ))}
-          </NativeSelect>
-
-          <Label htmlFor="depends-on-task" className={CONTROL_LABEL_CLASS}>
-            Depends on
-          </Label>
-          <NativeSelect
-            id="depends-on-task"
-            className="w-full"
-            value={selectedDependsOnTaskId}
-            onChange={(event) => {
-              setDependsOnTaskId(event.target.value);
-            }}
-          >
-            {rootTasks.map((task) => (
-              <NativeSelectOption key={task.id} value={task.id}>
-                {task.id} - {task.title}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => {
-              dispatch({
-                type: "add_dependency",
-                taskId: selectedDependencyTaskId,
-                dependsOnTaskId: selectedDependsOnTaskId,
-              });
-            }}
-            disabled={!selectedDependencyTaskId || !selectedDependsOnTaskId}
-          >
-            Link Dependency
-          </Button>
-        </CardContent>
-      </Card>
-
-      <section className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-4">
-        {STATUS_ORDER.map((status) => (
-          <StatusColumn
-            key={`${status}-${debouncedQuery}-${pageSize}-${state.revision}`}
-            status={status}
-            query={debouncedQuery}
-            pageSize={pageSize}
-            tasksById={state.tasks.byId}
-            selectedTaskIds={state.selectedTaskIds}
-            draggingTaskId={draggingTaskId}
-            isDropActive={dropTargetStatus === status}
-            fetchColumnPage={fetchColumnPage}
-            onTaskDragStart={handleTaskDragStart}
-            onTaskDragEnd={handleTaskDragEnd}
-            onColumnDragOver={handleColumnDragOver}
-            onColumnDragLeave={handleColumnDragLeave}
-            onColumnDrop={handleColumnDrop}
-            onToggleSelect={handleToggleSelect}
-            onMoveTask={handleMoveTask}
-            onSelectMany={handleSelectMany}
-          />
-        ))}
-      </section>
-
-      <Separator className="my-4 bg-[#d7dde3]" />
-
-      <ul className="fixed bottom-4 right-4 z-[100] grid w-[min(24rem,calc(100vw-2rem))] list-none gap-2 p-0">
-        {state.activeToasts.map((toast) => (
-          <ToastItem
-            key={toast.id}
-            toast={toast}
-            onDismiss={handleDismissToast}
-          />
-        ))}
-      </ul>
+          </ul>
+        </div>
+      </TooltipProvider>
     </main>
   );
 }
